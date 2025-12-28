@@ -107,10 +107,8 @@ def run_server(enable_batching: bool, env_vars: Dict[str, str] = None) -> subpro
     )
     return process
 
-async def main():
+async def run_experiment(NUM_REQUESTS: int, CONCURRENCY: int):
     # settings for the comparison - SCALED UP
-    NUM_REQUESTS = 1000
-    CONCURRENCY = 100
     
     # 1. run without batching (baseline)
     server_process = run_server(enable_batching=False)
@@ -153,4 +151,6 @@ async def main():
     print("="*50)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    data = [[1000, 50], [5000, 100], [10000, 200]]
+    for num_requests, concurrency in data:
+        asyncio.run(run_experiment(num_requests, concurrency))
