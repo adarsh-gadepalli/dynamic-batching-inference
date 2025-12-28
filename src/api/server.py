@@ -2,84 +2,102 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from contextlib import asynccontextmanager
 from src.core.batcher import DynamicBatcher
+from src.core.continuous_batcher import ContinuousBatcher
 from src.models.nlp import NLPModel
+from src.models.gen import GenerativeModel
 import uvicorn
 import os
 import asyncio
+import torch
 
 # config
-MAX_BATCH_SIZE = 64
-MAX_LATENCY_MS = 5.0
-MODEL_NAME = "distilbert-base-uncased-finetuned-sst-2-english"
-ENABLE_BATCHING = os.getenv("ENABLE_BATCHING", "True").lower() == "true"
+# BATCHING_TYPE: "NONE", "DYNAMIC", "CONTINUOUS"
+BATCHING_TYPE = os.getenv("BATCHING_TYPE", "DYNAMIC").upper()
+MAX_BATCH_SIZE = int(os.getenv("MAX_BATCH_SIZE", "32"))
+MAX_LATENCY_MS = float(os.getenv("MAX_LATENCY_MS", "10.0"))
+
+# Model selection based on type
+# For continuous, we MUST use generative. For others, we can stick to NLP or switch to Gen.
+# To keep comparison fair, let's use Generative for all if we are comparing strategies?
+# Or keep NLP for dynamic/none and Gen for continuous? 
+# Comparing different models invalidates the benchmark. 
+# WE MUST SWITCH ALL MODES TO THE GENERATIVE MODEL.
+MODEL_NAME = "gpt2" 
 
 batcher = None
 model = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # this runs when the server starts
     global batcher, model
-    print("initializing model...")
+    print(f"initializing server with batching_type={BATCHING_TYPE}...")
     
-    # create model
-    model = NLPModel(model_name=MODEL_NAME)
+    # Always use GenerativeModel for fair comparison now
+    model = GenerativeModel(model_name=MODEL_NAME)
     model.load()
 
-    if ENABLE_BATCHING:
-        print("batching enabled")
-        batcher = DynamicBatcher(model, max_batch_size=MAX_BATCH_SIZE, max_latency_ms=MAX_LATENCY_MS)
-        # start the background loop
+    if BATCHING_TYPE == "CONTINUOUS":
+        print("continuous batching enabled")
+        batcher = ContinuousBatcher(model, max_batch_size=MAX_BATCH_SIZE)
         await batcher.start()
-    else:
+        
+    elif BATCHING_TYPE == "DYNAMIC":
+        print("dynamic batching enabled")
+        # Reuse existing dynamic batcher but with the new model
+        # Note: DynamicBatcher expects model.predict which returns full list
+        batcher = DynamicBatcher(model, max_batch_size=MAX_BATCH_SIZE, max_latency_ms=MAX_LATENCY_MS)
+        await batcher.start()
+        
+    else: # NONE
         print("batching disabled (direct inference)")
         batcher = None
     
-    yield # server runs here
+    yield
     
-    # this runs when the server stops
     print("shutting down...")
     if batcher:
         await batcher.stop()
 
 class PredictRequest(BaseModel):
-    # defines what the user must send us
     text: str
 
 class PredictResponse(BaseModel):
-    # defines what we send back
-    label: str
-    score: float
+    result: str # Changed from label/score to simple string for generation
     
 app = FastAPI(lifespan=lifespan)
 
 @app.post("/predict", response_model=PredictResponse)
 async def predict(request: PredictRequest):
-    # the main endpoint for inference
-    
-    if ENABLE_BATCHING:
-        if not batcher:
-            raise HTTPException(status_code=503, detail="batcher not initialized")
-        try:
-            # send text to the batcher and wait for the result
+    try:
+        if BATCHING_TYPE in ["DYNAMIC", "CONTINUOUS"]:
+            if not batcher:
+                raise HTTPException(status_code=503, detail="batcher not initialized")
+            
+            # both batchers expose .predict(text)
+            # Dynamic returns list[str], Continuous returns str
+            # Wait, DynamicBatcher.predict returns a single item result because it wraps the future.
+            # However, the underlying model.predict returns a list.
+            # Let's ensure consistency.
+            
             result = await batcher.predict(request.text)
-            return result
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
-    else:
-        # no batching: run directly
-        if not model:
-            raise HTTPException(status_code=503, detail="model not initialized")
-        
-        try:
-            # run in executor to avoid blocking the event loop completely
+            
+            # DynamicBatcher usually returns the single result from the future.
+            # ContinuousBatcher also returns the single result string.
+            return PredictResponse(result=str(result))
+            
+        else:
+            # NO BATCHING
+            if not model:
+                raise HTTPException(status_code=503, detail="model not initialized")
             
             loop = asyncio.get_running_loop()
+            # Run directly. GenerativeModel.predict expects list, returns list.
             results = await loop.run_in_executor(None, model.predict, [request.text])
-            return results[0]
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
+            return PredictResponse(result=results[0])
+            
+    except Exception as e:
+        print(f"error processing request: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
-    # run the server on port 8000
     uvicorn.run(app, host="0.0.0.0", port=8000)

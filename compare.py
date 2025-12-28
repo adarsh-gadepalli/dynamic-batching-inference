@@ -8,35 +8,32 @@ import sys
 import os
 import signal
 import json
+import csv
 from typing import Dict, List, Tuple
 
 # configuration
 SERVER_HOST = "http://localhost:8000"
 ENDPOINT = "/predict"
 TEST_TEXTS = [
-    "this movie is great!",
-    "i didn't like this product.",
-    "the weather is amazing today.",
-    "customer service was terrible.",
-    "i am neutral about this."
+    "The future of AI is",
+    "Once upon a time",
+    "Python is a great language because",
+    "The weather today is",
+    "In a galaxy far far away"
 ]
 
 def kill_process_on_port(port: int):
     """find and kill any process listening on the specified port."""
     try:
-        # lsof -i :<port> -t returns the pid
         cmd = f"lsof -i :{port} -t"
         pid = subprocess.check_output(cmd, shell=True).decode().strip()
         if pid:
-            print(f"killing process {pid} on port {port}...")
             os.kill(int(pid), signal.SIGKILL)
-            time.sleep(1) # wait for cleanup
+            time.sleep(1)
     except subprocess.CalledProcessError:
-        # no process found
         pass
 
 async def send_request(session: aiohttp.ClientSession, url: str) -> float:
-    """sends a single request and returns the latency in seconds."""
     text = random.choice(TEST_TEXTS)
     start = time.time()
     async with session.post(url, json={"text": text}) as response:
@@ -44,20 +41,17 @@ async def send_request(session: aiohttp.ClientSession, url: str) -> float:
         return time.time() - start
 
 async def run_load_test(name: str, num_requests: int, concurrency: int) -> Dict:
-    """runs the load test against the currently running server."""
     print(f"\n[{name}] starting load test: {num_requests} requests, {concurrency} concurrency")
-    
     url = f"{SERVER_HOST}{ENDPOINT}"
     tasks = []
     
-    # wait a bit for server to be fully ready
-    await asyncio.sleep(2)
+    await asyncio.sleep(20) # generous startup wait for gpt2 model loading
 
     conn = aiohttp.TCPConnector(limit=concurrency)
     async with aiohttp.ClientSession(connector=conn) as session:
         # warm up
         print(f"[{name}] warming up...")
-        for _ in range(10):
+        for _ in range(5):
             try:
                 await send_request(session, url)
             except:
@@ -65,15 +59,13 @@ async def run_load_test(name: str, num_requests: int, concurrency: int) -> Dict:
         
         print(f"[{name}] running benchmark...")
         start_total = time.time()
-        
         for _ in range(num_requests):
             tasks.append(send_request(session, url))
-            
+        
         latencies = await asyncio.gather(*tasks)
         total_time = time.time() - start_total
         
     avg_latency_ms = statistics.mean(latencies) * 1000
-    p50_ms = statistics.median(latencies) * 1000
     p95_ms = statistics.quantiles(latencies, n=20)[18] * 1000
     throughput = num_requests / total_time
     
@@ -84,73 +76,80 @@ async def run_load_test(name: str, num_requests: int, concurrency: int) -> Dict:
         "p95_latency_ms": round(p95_ms, 2),
         "total_time_sec": round(total_time, 2)
     }
-    
     print(f"[{name}] results: {json.dumps(results, indent=2)}")
     return results
 
-def run_server(enable_batching: bool, env_vars: Dict[str, str] = None) -> subprocess.Popen:
-    """starts the server subprocess with the given batching configuration."""
+def run_server(batching_type: str, env_vars: Dict[str, str] = None) -> subprocess.Popen:
     env = os.environ.copy()
-    env["ENABLE_BATCHING"] = str(enable_batching)
+    env["BATCHING_TYPE"] = batching_type
     if env_vars:
         env.update(env_vars)
     
-    # ensure port is free
     kill_process_on_port(8000)
+    print(f"\nstarting server with BATCHING_TYPE={batching_type}...")
     
-    print(f"\nstarting server with ENABLE_BATCHING={enable_batching} (env={env_vars})...")
     process = subprocess.Popen(
         [sys.executable, "-m", "src.api.server"],
         env=env,
-        stdout=subprocess.DEVNULL, # silence server output for cleaner report
-        stderr=subprocess.DEVNULL
+        # stdout=subprocess.DEVNULL, # enable logs for debugging
+        # stderr=subprocess.DEVNULL
     )
     return process
 
-async def run_experiment(NUM_REQUESTS: int, CONCURRENCY: int):
-    # settings for the comparison - SCALED UP
+async def run_experiment(num_requests: int, concurrency: int):
+    results = {}
     
-    # 1. run without batching (baseline)
-    server_process = run_server(enable_batching=False)
+    # 1. NONE
+    p = run_server("NONE")
     try:
-        # wait for startup
-        await asyncio.sleep(5) 
-        results_no_batch = await run_load_test("no_batching", NUM_REQUESTS, CONCURRENCY)
+        results["none"] = await run_load_test("none", num_requests, concurrency)
     finally:
-        server_process.terminate()
-        server_process.wait()
-    
-    # 2. run with batching (optimized)
-    # Using larger batch size and lower latency to handle high throughput
-    optimized_env = {
-        "MAX_BATCH_SIZE": "64",
-        "MAX_LATENCY_MS": "5.0"
-    }
-    server_process = run_server(enable_batching=True, env_vars=optimized_env)
+        p.terminate()
+        p.wait()
+
+    # 2. DYNAMIC
+    # For fair comparison with Continuous (which is naturally 'aggressive'), 
+    # we tune Dynamic to be reasonably aggressive too.
+    env = {"MAX_BATCH_SIZE": "32", "MAX_LATENCY_MS": "10.0"}
+    p = run_server("DYNAMIC", env)
     try:
-        # wait for startup
-        await asyncio.sleep(5)
-        results_batch = await run_load_test("with_batching", NUM_REQUESTS, CONCURRENCY)
+        results["dynamic"] = await run_load_test("dynamic", num_requests, concurrency)
     finally:
-        server_process.terminate()
-        server_process.wait()
+        p.terminate()
+        p.wait()
+
+    # 3. CONTINUOUS
+    env = {"MAX_BATCH_SIZE": "32"}
+    p = run_server("CONTINUOUS", env)
+    try:
+        results["continuous"] = await run_load_test("continuous", num_requests, concurrency)
+    finally:
+        p.terminate()
+        p.wait()
         
-    # 3. print comparison
-    print("\n" + "="*50)
-    print("FINAL COMPARISON REPORT")
-    print("="*50)
-    print(f"{'Metric':<20} | {'No Batching':<15} | {'With Batching':<15} | {'Improvement':<15}")
-    print("-" * 70)
-    
-    throughput_diff = ((results_batch['throughput_req_per_sec'] - results_no_batch['throughput_req_per_sec']) / results_no_batch['throughput_req_per_sec']) * 100
-    latency_diff = ((results_no_batch['avg_latency_ms'] - results_batch['avg_latency_ms']) / results_no_batch['avg_latency_ms']) * 100
-    
-    print(f"{'Throughput (req/s)':<20} | {results_no_batch['throughput_req_per_sec']:<15} | {results_batch['throughput_req_per_sec']:<15} | {throughput_diff:+.1f}%")
-    print(f"{'Avg Latency (ms)':<20} | {results_no_batch['avg_latency_ms']:<15} | {results_batch['avg_latency_ms']:<15} | {latency_diff:+.1f}% (faster)")
-    print(f"{'P95 Latency (ms)':<20} | {results_no_batch['p95_latency_ms']:<15} | {results_batch['p95_latency_ms']:<15} | -")
-    print("="*50)
+    return results
 
 if __name__ == "__main__":
-    data = [[1000, 50], [5000, 100], [10000, 200]]
-    for num_requests, concurrency in data:
-        asyncio.run(run_experiment(num_requests, concurrency))
+    # We run a smaller test first because Generation is much slower than Classification
+    experiments = [[100, 10], [200, 20]] 
+    
+    all_data = []
+
+    for reqs, conn in experiments:
+        print(f"\n>>> EXPERIMENT: {reqs} reqs, {conn} conn <<<")
+        res = asyncio.run(run_experiment(reqs, conn))
+        
+        row = {
+            "requests": reqs,
+            "concurrency": conn,
+            "throughput_none": res["none"]["throughput_req_per_sec"],
+            "throughput_dynamic": res["dynamic"]["throughput_req_per_sec"],
+            "throughput_continuous": res["continuous"]["throughput_req_per_sec"],
+            "latency_none": res["none"]["avg_latency_ms"],
+            "latency_dynamic": res["dynamic"]["avg_latency_ms"],
+            "latency_continuous": res["continuous"]["avg_latency_ms"],
+        }
+        all_data.append(row)
+
+    print("\nFINAL REPORT")
+    print(json.dumps(all_data, indent=2))
