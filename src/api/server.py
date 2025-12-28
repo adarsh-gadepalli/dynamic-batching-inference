@@ -8,8 +8,8 @@ import os
 import asyncio
 
 # config
-MAX_BATCH_SIZE = 32
-MAX_LATENCY_MS = 10.0
+MAX_BATCH_SIZE = 64
+MAX_LATENCY_MS = 5.0
 MODEL_NAME = "distilbert-base-uncased-finetuned-sst-2-english"
 ENABLE_BATCHING = os.getenv("ENABLE_BATCHING", "True").lower() == "true"
 

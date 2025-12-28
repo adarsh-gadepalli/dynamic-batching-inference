@@ -14,12 +14,13 @@ class InferenceRequest:
 
 class DynamicBatcher:
     # dynamially collects requests and runs them in batches
-    def __init__(self, model, max_batch_size: int = 32, max_latency_ms: float = 10.0):
+    def __init__(self, model, max_batch_size: int = 64, max_latency_ms: float = 10.0, max_queue_size: int = 10000):
         self.model = model
         self.max_batch_size = max_batch_size
         self.max_latency = max_latency_ms / 1000.0  
         # asyncio.queue is thread-safe and async-friendly, perfect for buffering requests
-        self.queue = asyncio.Queue()  
+        # bounded queue prevents infinite memory growth under heavy load
+        self.queue = asyncio.Queue(maxsize=max_queue_size)  
         self.running = False
         self._loop_task = None
 
@@ -44,6 +45,9 @@ class DynamicBatcher:
 
     async def predict(self, input_data: Any) -> Any:
         # puts data in queue and awaits answer
+        if self.queue.full():
+            raise Exception("server overloaded: queue full")
+            
         request = InferenceRequest(
             request_id=str(time.time()),
             input_data=input_data
