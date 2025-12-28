@@ -45,7 +45,7 @@ async def run_load_test(name: str, num_requests: int, concurrency: int) -> Dict:
     url = f"{SERVER_HOST}{ENDPOINT}"
     tasks = []
     
-    await asyncio.sleep(20) # generous startup wait for gpt2 model loading
+    await asyncio.sleep(40) # generous startup wait for gpt2 model loading
 
     conn = aiohttp.TCPConnector(limit=concurrency)
     async with aiohttp.ClientSession(connector=conn) as session:

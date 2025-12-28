@@ -8,7 +8,7 @@ class GenerativeModel(BaseModel):
         self.model_name = model_name
         self.tokenizer = None
         self.model = None
-        self.max_length = 50
+        self.max_length = 20 # aligned with continuous batcher limit for fair comparison
         
         if torch.cuda.is_available():
             self.device = "cuda"

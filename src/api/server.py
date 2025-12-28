@@ -16,12 +16,7 @@ BATCHING_TYPE = os.getenv("BATCHING_TYPE", "DYNAMIC").upper()
 MAX_BATCH_SIZE = int(os.getenv("MAX_BATCH_SIZE", "32"))
 MAX_LATENCY_MS = float(os.getenv("MAX_LATENCY_MS", "10.0"))
 
-# Model selection based on type
-# For continuous, we MUST use generative. For others, we can stick to NLP or switch to Gen.
-# To keep comparison fair, let's use Generative for all if we are comparing strategies?
-# Or keep NLP for dynamic/none and Gen for continuous? 
-# Comparing different models invalidates the benchmark. 
-# WE MUST SWITCH ALL MODES TO THE GENERATIVE MODEL.
+
 MODEL_NAME = "gpt2" 
 
 batcher = None
@@ -32,7 +27,6 @@ async def lifespan(app: FastAPI):
     global batcher, model
     print(f"initializing server with batching_type={BATCHING_TYPE}...")
     
-    # Always use GenerativeModel for fair comparison now
     model = GenerativeModel(model_name=MODEL_NAME)
     model.load()
 
@@ -43,12 +37,11 @@ async def lifespan(app: FastAPI):
         
     elif BATCHING_TYPE == "DYNAMIC":
         print("dynamic batching enabled")
-        # Reuse existing dynamic batcher but with the new model
-        # Note: DynamicBatcher expects model.predict which returns full list
+
         batcher = DynamicBatcher(model, max_batch_size=MAX_BATCH_SIZE, max_latency_ms=MAX_LATENCY_MS)
         await batcher.start()
         
-    else: # NONE
+    else: 
         print("batching disabled (direct inference)")
         batcher = None
     
@@ -62,7 +55,7 @@ class PredictRequest(BaseModel):
     text: str
 
 class PredictResponse(BaseModel):
-    result: str # Changed from label/score to simple string for generation
+    result: str 
     
 app = FastAPI(lifespan=lifespan)
 
@@ -73,25 +66,15 @@ async def predict(request: PredictRequest):
             if not batcher:
                 raise HTTPException(status_code=503, detail="batcher not initialized")
             
-            # both batchers expose .predict(text)
-            # Dynamic returns list[str], Continuous returns str
-            # Wait, DynamicBatcher.predict returns a single item result because it wraps the future.
-            # However, the underlying model.predict returns a list.
-            # Let's ensure consistency.
-            
             result = await batcher.predict(request.text)
-            
-            # DynamicBatcher usually returns the single result from the future.
-            # ContinuousBatcher also returns the single result string.
             return PredictResponse(result=str(result))
             
         else:
-            # NO BATCHING
+            # no batching
             if not model:
                 raise HTTPException(status_code=503, detail="model not initialized")
             
             loop = asyncio.get_running_loop()
-            # Run directly. GenerativeModel.predict expects list, returns list.
             results = await loop.run_in_executor(None, model.predict, [request.text])
             return PredictResponse(result=results[0])
             

@@ -63,22 +63,14 @@ class ContinuousBatcher:
                 await asyncio.sleep(0.001)
                 continue
 
-            # 2. run one step for all active requests
-            # in a real continuous batcher (vllm), we would pack these into a single tensor
-            # for this python demo, we iterate to simulate the "step" progress
-            
-            # note: to truly gain perf, we need to batch the forward pass. 
             # padding inputs to match largest in batch for this step.
             
             try:
                 # prepare batch inputs
                 # find max length in current active set to pad efficiently
                 current_input_ids = [req.input_ids for req in self.active_requests]
-                
-                # we need to run the model. for simplicity/speed in this demo, 
-                # we will assume we run 1 token generation for the batch.
-                # real implementation of kv cache management in pure python is too lines of code.
-                # so we simulate the "work" by running a forward pass on the longest sequence.
+
+                # we simulate the "work" by running a forward pass on the longest sequence.
                 
                 # optimization: simplistic batching
                 max_len = max(t.size(1) for t in current_input_ids)
@@ -103,7 +95,6 @@ class ContinuousBatcher:
                     req.generated_tokens.append(token_id)
                     
                     # update input_ids for next step (append new token)
-                    # in real impl, we'd update kv cache, not grow input_ids endlessly
                     req.input_ids = torch.cat([req.input_ids, next_tokens_ids[i].view(1, 1)], dim=1)
                     
                     # check stop conditions (eos or length)
@@ -115,13 +106,14 @@ class ContinuousBatcher:
                         full_text = self.model.tokenizer.decode(req.generated_tokens)
                         req.future.set_result(full_text)
 
-                # 4. remove finished requests (continuous batching magic!)
+                # remove finished requests 
                 # they leave immediately, making room for queue items in the next loop iteration
                 for i in sorted(finished_indices, reverse=True):
                     self.active_requests.pop(i)
                     
             except Exception as e:
                 print(f"error in continuous loop: {e}")
+                
                 # fail all to recover
                 for req in self.active_requests:
                     if not req.future.done():
