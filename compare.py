@@ -33,12 +33,19 @@ def kill_process_on_port(port: int):
     except subprocess.CalledProcessError:
         pass
 
-async def send_request(session: aiohttp.ClientSession, url: str) -> float:
+async def send_request(session: aiohttp.ClientSession, url: str) -> Tuple[float, int]:
     text = random.choice(TEST_TEXTS)
     start = time.time()
     async with session.post(url, json={"text": text}) as response:
-        await response.json()
-        return time.time() - start
+        data = await response.json()
+        latency = time.time() - start
+        
+        # Estimate tokens (approx 1.3 tokens per word for English)
+        # This avoids needing the heavy tokenizer on the client side
+        generated_text = data.get("result", "")
+        est_tokens = int(len(generated_text.split()) * 1.3)
+        
+        return latency, est_tokens
 
 async def run_load_test(name: str, num_requests: int, concurrency: int) -> Dict:
     print(f"\n[{name}] starting load test: {num_requests} requests, {concurrency} concurrency")
@@ -62,16 +69,21 @@ async def run_load_test(name: str, num_requests: int, concurrency: int) -> Dict:
         for _ in range(num_requests):
             tasks.append(send_request(session, url))
         
-        latencies = await asyncio.gather(*tasks)
+        results_list = await asyncio.gather(*tasks)
+        latencies = [r[0] for r in results_list]
+        total_tokens = sum(r[1] for r in results_list)
+        
         total_time = time.time() - start_total
         
     avg_latency_ms = statistics.mean(latencies) * 1000
     p95_ms = statistics.quantiles(latencies, n=20)[18] * 1000
     throughput = num_requests / total_time
+    tokens_per_sec = total_tokens / total_time
     
     results = {
         "name": name,
         "throughput_req_per_sec": round(throughput, 2),
+        "tokens_per_sec": round(tokens_per_sec, 2),
         "avg_latency_ms": round(avg_latency_ms, 2),
         "p95_latency_ms": round(p95_ms, 2),
         "total_time_sec": round(total_time, 2)
@@ -130,8 +142,13 @@ async def run_experiment(num_requests: int, concurrency: int):
     return results
 
 if __name__ == "__main__":
-    # We run a smaller test first because Generation is much slower than Classification
-    experiments = [[100, 10], [200, 20]] 
+    # Experiments: [requests, concurrency]
+    experiments = [
+        [50, 5],
+        [100, 10], 
+        [200, 20],
+        [300, 30]
+    ] 
     
     all_data = []
 
@@ -145,6 +162,9 @@ if __name__ == "__main__":
             "throughput_none": res["none"]["throughput_req_per_sec"],
             "throughput_dynamic": res["dynamic"]["throughput_req_per_sec"],
             "throughput_continuous": res["continuous"]["throughput_req_per_sec"],
+            "tps_none": res["none"]["tokens_per_sec"],
+            "tps_dynamic": res["dynamic"]["tokens_per_sec"],
+            "tps_continuous": res["continuous"]["tokens_per_sec"],
             "latency_none": res["none"]["avg_latency_ms"],
             "latency_dynamic": res["dynamic"]["avg_latency_ms"],
             "latency_continuous": res["continuous"]["avg_latency_ms"],
@@ -152,4 +172,9 @@ if __name__ == "__main__":
         all_data.append(row)
 
     print("\nFINAL REPORT")
-    print(json.dumps(all_data, indent=2))
+    json_output = json.dumps(all_data, indent=2)
+    print(json_output)
+    
+    # Save to file for notebook to pick up
+    with open("results.json", "w") as f:
+        f.write(json_output)
