@@ -13,8 +13,9 @@ class InferenceRequest:
     arrival_time: float = field(default_factory=time.time)
 
 class DynamicBatcher:
-    # dynamially collects requests and runs them in batches
-    def __init__(self, model, max_batch_size: int = 64, max_latency_ms: float = 10.0, max_queue_size: int = 10000):
+
+    # dynamically collects requests and runs them in batches
+    def __init__(self, model, max_batch_size: int = 32, max_latency_ms: float = 10.0, max_queue_size: int = 10000):
         self.model = model
         self.max_batch_size = max_batch_size
         self.max_latency = max_latency_ms / 1000.0  
@@ -30,7 +31,7 @@ class DynamicBatcher:
         self.running = True
         # asyncio.create_task fires off a function to run in the background immediately
         self._loop_task = asyncio.create_task(self._process_batches())
-        print(f"batcher started: max_batch={self.max_batch_size}, wait={self.max_latency}s")
+        print(f"dynamic batcher started")
 
     async def stop(self):
         # stops the background worker 

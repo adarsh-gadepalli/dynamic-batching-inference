@@ -24,21 +24,26 @@ class ContinuousBatcher:
         self.active_requests: List[ContinuousRequest] = []
 
     async def start(self):
+         # loads model and starts the background worker task
         self.model.load()
         self.running = True
-        self._loop_task = asyncio.create_task(self._loop())
+        self._loop_task = asyncio.create_task(self._process_batches())
         print("continuous batcher started.")
 
     async def stop(self):
+        # stops the background worker 
         self.running = False
         if self._loop_task:
             self._loop_task.cancel()
             try:
+                # await the cancelled task to let it clean up properly
                 await self._loop_task
             except asyncio.CancelledError:
                 pass
 
     async def predict(self, text: str) -> str:
+
+        # puts request in queue and awaits answer
         req = ContinuousRequest(
             request_id=str(time.time()),
             input_text=text
@@ -46,35 +51,34 @@ class ContinuousBatcher:
         await self.queue.put(req)
         return await req.future
 
-    async def _loop(self):
+    async def _process_batches(self):
         while self.running:
-            # 1. fill empty slots from queue
+            # while we have room in the batch, pull from queue
             while len(self.active_requests) < self.max_batch_size and not self.queue.empty():
                 try:
+                    # get request and tokenize immediately
                     req = self.queue.get_nowait()
                     # tokenize immediately
                     inputs = self.model.tokenizer(req.input_text, return_tensors="pt").to(self.model.device)
                     req.input_ids = inputs.input_ids
+
+                    # add to active set
                     self.active_requests.append(req)
                 except asyncio.QueueEmpty:
                     break
-
+                    
             if not self.active_requests:
                 await asyncio.sleep(0.001)
                 continue
-
-            # padding inputs to match largest in batch for this step.
             
             try:
-                # prepare batch inputs
                 # find max length in current active set to pad efficiently
                 current_input_ids = [req.input_ids for req in self.active_requests]
-
-                # we simulate the "work" by running a forward pass on the longest sequence.
-                
-                # optimization: simplistic batching
                 max_len = max(t.size(1) for t in current_input_ids)
+
                 padded_inputs = []
+
+                # pad all to max length
                 for t in current_input_ids:
                     pad_len = max_len - t.size(1)
                     if pad_len > 0:
@@ -88,7 +92,7 @@ class ContinuousBatcher:
                 # run forward pass (generate 1 token)
                 next_tokens_ids, _ = self.model.generate_step(batch_tensor)
                 
-                # 3. process results and manage state
+                # process results and manage state
                 finished_indices = []
                 for i, req in enumerate(self.active_requests):
                     token_id = next_tokens_ids[i].item()

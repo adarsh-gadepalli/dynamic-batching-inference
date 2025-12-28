@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from contextlib import asynccontextmanager
-from src.core.batcher import DynamicBatcher
+from core.dynamic_batcher import DynamicBatcher
 from src.core.continuous_batcher import ContinuousBatcher
 from src.models.nlp import NLPModel
 from src.models.gen import GenerativeModel
