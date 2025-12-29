@@ -17,9 +17,12 @@ ENDPOINT = "/predict"
 TEST_TEXTS = [
     "The future of AI is",
     "Once upon a time",
-    "Python is a great language because",
-    "The weather today is",
-    "In a galaxy far far away"
+    "Python is the best language because",
+    "The weather today in Bastrop Texas is",
+    "The basketball player who changed the game the most in the last decade is",
+    "When it comes to producing, Kaytranada ",
+    "The best city to live in America is", 
+    "The hardest part of being human is"
 ]
 
 def kill_process_on_port(port: int):
@@ -94,6 +97,11 @@ async def run_load_test(name: str, num_requests: int, concurrency: int) -> Dict:
 def run_server(batching_type: str, env_vars: Dict[str, str] = None) -> subprocess.Popen:
     env = os.environ.copy()
     env["BATCHING_TYPE"] = batching_type
+    
+    # Enable profiling for just one experiment if you want, or all
+    # Let's enable it by default for this run to capture the traces
+    env["ENABLE_PROFILING"] = "1"
+    
     if env_vars:
         env.update(env_vars)
     
